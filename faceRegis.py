@@ -29,31 +29,50 @@ os.makedirs("faces", exist_ok=True)
 def register_face(frame, name, age):
     rgb_frame = frame[:, :, ::-1]  # Chuyển ảnh thành RGB
 
-    # Phát hiện các khuôn mặt trong ảnh
-    face_locations = face_recognition.face_locations(rgb_frame)
-    
-    # Chỉ tiến hành nếu phát hiện được khuôn mặt
+    # Phát hiện khuôn mặt từ YOLO
+    results = model(frame)  # Mô hình YOLOv8 nhận diện đối tượng
+    face_locations = []
+
+    # Kiểm tra nếu YOLO phát hiện khuôn mặt
+    if results:
+        res = results[0] if isinstance(results, (list, tuple)) else results
+        boxes = getattr(res, 'boxes', None)
+
+        if boxes is not None:
+            xyxy = boxes.xyxy.cpu().numpy() if hasattr(boxes, 'xyxy') else None
+            cls = boxes.cls.cpu().numpy() if hasattr(boxes, 'cls') else None
+
+            if xyxy is not None and cls is not None:
+                for (x1, y1, x2, y2), c in zip(xyxy, cls):
+                    if int(c) == 0:  # class 0 == người trong COCO
+                        face_locations.append((y1, x2, y2, x1))  # Chuyển đổi từ (top, right, bottom, left)
+
+    # Nếu phát hiện khuôn mặt từ YOLO, tiến hành tạo encoding khuôn mặt
     if len(face_locations) > 0:
-        # Lấy đặc trưng khuôn mặt
         face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-        # Lưu ảnh khuôn mặt
-        image_name = f"faces/{name.lower().replace(' ', '_')}.jpg"
-        cv2.imwrite(image_name, frame)
+        if len(face_encodings) > 0:
+            encoding = face_encodings[0]  # Lấy mảng đặc trưng của khuôn mặt
 
-        # Lưu vào MongoDB
-        face_data = {
-            "name": name,
-            "age": age,
-            "embedding": face_encodings[0].tolist(),  # Chuyển mảng numpy thành list trước khi lưu vào MongoDB
-            "image_path": image_name,  # Lưu đường dẫn đến ảnh
-            "created_at": datetime.utcnow()  # Lưu thời gian tạo
-        }
+            # Lưu ảnh khuôn mặt
+            image_name = f"faces/{name.lower().replace(' ', '_')}.jpg"
+            cv2.imwrite(image_name, frame)
 
-        faces_collection.insert_one(face_data)
-        print(f"Đã đăng ký khuôn mặt của {name}")
+            # Lưu vào MongoDB
+            face_data = {
+                "name": name,
+                "age": age,
+                "embedding": encoding.tolist(),  # Chuyển mảng numpy thành list trước khi lưu vào MongoDB
+                "image_path": image_name,  # Lưu đường dẫn đến ảnh
+                "created_at": datetime.utcnow()  # Lưu thời gian tạo
+            }
+
+            faces_collection.insert_one(face_data)
+            print(f"Đã đăng ký khuôn mặt của {name}")
+        else:
+            print("Không phát hiện khuôn mặt để đăng ký")
     else:
-        print("Không phát hiện khuôn mặt để đăng ký")
+        print("YOLO không phát hiện khuôn mặt")
 
 # Vòng lặp chính để xử lý từng khung hình
 while True:
