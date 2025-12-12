@@ -1,13 +1,16 @@
-import face_recognition
 import cv2
 import numpy as np
+import face_recognition
 from pymongo import MongoClient
 import os
+from datetime import datetime
+from ultralytics import YOLO
+import uuid
 
-# Kết nối tới MongoDB
+# Kết nối đến MongoDB
 client = MongoClient('mongodb://localhost:27017/')
-db = client['face_recognition_db']  # Tạo database
-faces_collection = db['faces']  # Tạo collection lưu khuôn mặt
+db = client['dc']  # Tên Database
+faces_collection = db['face_id']  # Tên Collection
 
 # Khởi tạo camera
 cap = cv2.VideoCapture(0)
@@ -16,19 +19,35 @@ if not cap.isOpened():
     print("Không thể mở camera")
     exit()
 
+# Khởi tạo mô hình YOLOv8
+model = YOLO('yolov8l-face.pt')  # Dùng mô hình YOLOv8 để nhận diện khuôn mặt
+
+# Tạo thư mục lưu ảnh nếu chưa tồn tại
+os.makedirs("faces", exist_ok=True)
+
 # Hàm đăng ký khuôn mặt vào MongoDB
-def register_face(frame, name):
+def register_face(frame, name, age):
     rgb_frame = frame[:, :, ::-1]  # Chuyển ảnh thành RGB
+
+    # Phát hiện các khuôn mặt trong ảnh
     face_locations = face_recognition.face_locations(rgb_frame)
-    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+    
+    # Chỉ tiến hành nếu phát hiện được khuôn mặt
+    if len(face_locations) > 0:
+        # Lấy đặc trưng khuôn mặt
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-    if len(face_encodings) > 0:
-        encoding = face_encodings[0]  # Lấy mảng đặc trưng của khuôn mặt
+        # Lưu ảnh khuôn mặt
+        image_name = f"faces/{name.lower().replace(' ', '_')}.jpg"
+        cv2.imwrite(image_name, frame)
 
-        # Lưu khuôn mặt và tên vào MongoDB
+        # Lưu vào MongoDB
         face_data = {
             "name": name,
-            "encoding": encoding.tolist()  # Chuyển mảng numpy thành list trước khi lưu vào MongoDB
+            "age": age,
+            "embedding": face_encodings[0].tolist(),  # Chuyển mảng numpy thành list trước khi lưu vào MongoDB
+            "image_path": image_name,  # Lưu đường dẫn đến ảnh
+            "created_at": datetime.utcnow()  # Lưu thời gian tạo
         }
 
         faces_collection.insert_one(face_data)
@@ -44,13 +63,18 @@ while True:
         print("Không thể nhận frame từ camera")
         break
 
-    # Hiển thị hình ảnh
+    # Hiển thị ô nhập tên và tuổi
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(frame, 'Nhập tên và tuổi:', (10, 30), font, 1, (0, 255, 255), 2)
+
+    # Hiển thị panel nhập tên
     cv2.imshow('Đăng ký khuôn mặt', frame)
 
-    # Đăng ký khuôn mặt khi nhấn phím 'r'
+    # Nhấn phím 'r' để đăng ký khuôn mặt
     if cv2.waitKey(1) & 0xFF == ord('r'):
         name = input("Nhập tên người cần đăng ký: ")
-        register_face(frame, name)
+        age = int(input("Nhập tuổi: "))
+        register_face(frame, name, age)
 
     # Dừng lại nếu nhấn phím 'q'
     if cv2.waitKey(1) & 0xFF == ord('q'):
