@@ -1,47 +1,84 @@
-# load libraries
-from huggingface_hub import hf_hub_download
-from ultralytics import YOLO
-from supervision import Detections
-import cv2  # OpenCV for camera access
-from PIL import Image
-import numpy as np
+import torch
+import librosa
+from moviepy import VideoFileClip
+from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
 
-# download model
-model_path = hf_hub_download(repo_id="arnabdhar/YOLOv8-Face-Detection", filename="model.pt")
+SAMPLE_RATE = 16000
+CHUNK_SECONDS = 30
 
-# load model
-model = YOLO(model_path)
+# =============================
+# 1. Tách audio từ video
+# =============================
+def extract_audio_from_video(video_file: str, audio_file: str) -> str:
+    video = VideoFileClip(video_file)
+    video.audio.write_audiofile(audio_file, fps=SAMPLE_RATE)
+    video.close()
+    return audio_file
 
-# initialize camera
-cap = cv2.VideoCapture(0)  # 0 for the default camera
+# =============================
+# 2. Cắt audio thành các đoạn 30s
+# =============================
+def split_audio(audio, sr, chunk_seconds=30):
+    chunk_size = chunk_seconds * sr
+    return [
+        audio[i:i + chunk_size]
+        for i in range(0, len(audio), chunk_size)
+    ]
 
-if not cap.isOpened():
-    print("Cannot open camera")
-    exit()
+# =============================
+# 3. Transcribe toàn bộ audio
+# =============================
+def transcribe_audio_full(audio_file: str, model_name="openai/whisper-small") -> str:
+    audio, sr = librosa.load(audio_file, sr=SAMPLE_RATE, mono=True)
 
-while True:
-    # read a frame from the camera
-    ret, frame = cap.read()
+    processor = AutoProcessor.from_pretrained(model_name)
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(model_name)
+    model.eval()
 
-    if not ret:
-        print("Failed to grab frame")
-        break
+    forced_ids = processor.get_decoder_prompt_ids(
+        language="vi",
+        task="transcribe"
+    )
 
-    # convert the frame to PIL Image for YOLO model
-    pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    chunks = split_audio(audio, sr, CHUNK_SECONDS)
+    results = []
 
-    # inference
-    output = model(pil_image)
-    results = Detections.from_ultralytics(output[0])
+    for idx, chunk in enumerate(chunks):
+        inputs = processor(
+            chunk,
+            return_tensors="pt",
+            sampling_rate=SAMPLE_RATE
+        )
 
-    # optional: draw bounding boxes or display results on the frame
-    frame = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    cv2.imshow('Face Detection', frame)
+        with torch.no_grad():
+            generated_ids = model.generate(
+                inputs["input_features"],
+                forced_decoder_ids=forced_ids
+            )
 
-    # break the loop when the user presses 'q'
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        text = processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True
+        )[0]
 
-# release the camera and close windows
-cap.release()
-cv2.destroyAllWindows()
+        print(f"✔ Chunk {idx+1}/{len(chunks)} done")
+        results.append(text.strip())
+
+    return " ".join(results)
+
+# =============================
+# MAIN
+# =============================
+if __name__ == "__main__":
+    video_file = "baigiang.mp4"
+    audio_file = "extracted_audio.wav"
+
+    extract_audio_from_video(video_file, audio_file)
+
+    transcription = transcribe_audio_full(
+        audio_file,
+        model_name="openai/whisper-small"
+    )
+
+    print("\n===== FULL TRANSCRIPTION =====")
+    print(transcription)

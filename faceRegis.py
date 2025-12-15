@@ -1,10 +1,11 @@
 import cv2
 import numpy as np
+import face_recognition
+from pymongo import MongoClient
 import os
 from datetime import datetime
-from pymongo import MongoClient
-import insightface
 from ultralytics import YOLO
+import uuid
 
 # Kết nối đến MongoDB
 client = MongoClient('mongodb://localhost:27017/')
@@ -18,22 +19,21 @@ if not cap.isOpened():
     print("Không thể mở camera")
     exit()
 
-# Khởi tạo mô hình InsightFace (ArcFace)
-model = insightface.app.FaceAnalysis()
-model.prepare(ctx_id=0, det_size=(640, 640))  # ctx_id=0: chạy trên GPU, det_size: kích thước ảnh cho phát hiện khuôn mặt
-
 # Khởi tạo mô hình YOLOv8
-yolo_model = YOLO('yolov8l-face.pt')  # Dùng mô hình YOLOv8 để nhận diện khuôn mặt
+model = YOLO('yolov8l-face.pt')  # Dùng mô hình YOLOv8 để nhận diện khuôn mặt
 
 # Tạo thư mục lưu ảnh nếu chưa tồn tại
 os.makedirs("faces", exist_ok=True)
 
 # Hàm đăng ký khuôn mặt vào MongoDB
 def register_face(frame, name, age):
+    rgb_frame = frame[:, :, ::-1]  # Chuyển ảnh thành RGB
+
     # Phát hiện khuôn mặt từ YOLO
-    results = yolo_model(frame)  # Mô hình YOLOv8 nhận diện đối tượng
+    results = model(frame)  # Mô hình YOLOv8 nhận diện đối tượng
     face_locations = []
 
+    # Kiểm tra nếu YOLO phát hiện khuôn mặt
     if results:
         res = results[0] if isinstance(results, (list, tuple)) else results
         boxes = getattr(res, 'boxes', None)
@@ -45,16 +45,15 @@ def register_face(frame, name, age):
             if xyxy is not None and cls is not None:
                 for (x1, y1, x2, y2), c in zip(xyxy, cls):
                     if int(c) == 0:  # class 0 == người trong COCO
-                        face_locations.append((y1, x2, y2, x1))  # Chuyển từ (top, right, bottom, left)
+                        # Chuyển tọa độ YOLO (x1, y1, x2, y2) thành (top, right, bottom, left)
+                        face_locations.append((y1, x2, y2, x1))  # (top, right, bottom, left)
 
-    # Nếu phát hiện khuôn mặt từ YOLO, tiến hành nhận diện khuôn mặt
+    # Nếu phát hiện khuôn mặt từ YOLO, tiến hành tạo encoding khuôn mặt
     if len(face_locations) > 0:
-        rgb_frame = frame[:, :, ::-1]  # Chuyển ảnh thành RGB
-        faces = model.get(rgb_frame)  # Sử dụng InsightFace để nhận diện và trích xuất đặc trưng khuôn mặt
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-        for face in faces:
-            # Trích xuất đặc trưng khuôn mặt (embedding) từ InsightFace
-            encoding = face.embedding  # embedding là một mảng đặc trưng của khuôn mặt
+        if len(face_encodings) > 0:
+            encoding = face_encodings[0]  # Lấy mảng đặc trưng của khuôn mặt
 
             # Lưu ảnh khuôn mặt
             image_name = f"faces/{name.lower().replace(' ', '_')}.jpg"
@@ -71,6 +70,8 @@ def register_face(frame, name, age):
 
             faces_collection.insert_one(face_data)
             print(f"Đã đăng ký khuôn mặt của {name}")
+        else:
+            print("Không phát hiện khuôn mặt để đăng ký")
     else:
         print("YOLO không phát hiện khuôn mặt")
 
